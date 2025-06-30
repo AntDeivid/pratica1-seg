@@ -40,12 +40,12 @@ public class Server
     {
         var listener = new TcpListener(System.Net.IPAddress.Any, port);
         listener.Start();
-        Console.WriteLine($"Servidor iniciado na porta {port}. Aguardando conexões...");
+        Console.WriteLine($"Servidor '{_username}' iniciado na porta {port}. Aguardando conexões...");
 
         while (true)
         {
             var tcpClient = await listener.AcceptTcpClientAsync();
-            Console.WriteLine("Cliente conectado. Iniciando handshake...");
+            Console.WriteLine("\nCliente conectado. Iniciando handshake...");
             _ = Task.Run(() => HandleClient(tcpClient));
         }
     }
@@ -59,16 +59,16 @@ public class Server
             // etapa 1: receber nome de usuario e chave publica do cliente
             Console.WriteLine("Iniciando handshake com o cliente...");
             var clientUsername = await ReadStringAsync(stream);
-            Console.WriteLine($"Client username: {clientUsername}");
-
-            var clientPublicKeyPem = await GetKey(clientUsername);
+            Console.WriteLine($"Client username (identificador): {clientUsername}");
+            
+            var clientPublicKeyPem = await GetKey("AntDeivid", clientUsername);
             if (string.IsNullOrEmpty(clientPublicKeyPem))
             {
-                Console.WriteLine($"Chave pública não encontrada para '{clientUsername}'");
+                Console.WriteLine($"Chave pública não encontrada para o identificador '{clientUsername}'");
                 return;
             }
-
-            Console.WriteLine($"Chave pública de {clientUsername} recebida com sucesso");
+            
+            Console.WriteLine($"Chave pública de '{clientUsername}' obtida com sucesso");
 
             var clientDhKey = await ReadBytesAsync(stream);
             var clientSignature = await ReadBytesAsync(stream);
@@ -110,7 +110,8 @@ public class Server
         }
         finally
         {
-            Console.WriteLine("Fechando handshake com o cliente...");
+            Console.WriteLine("Fechando conexão com o cliente...");
+            tcpClient.Close();
         }
     }
 
@@ -147,10 +148,43 @@ public class Server
         }
     }
     
-    /// <summary>
-    /// metodos auxiliares
-    /// </summary>
+    private async Task<string> GetKey(string gitHubUser, string keyIdentifier)
+    {
+        try
+        {
+            var url = $"https://github.com/{gitHubUser}.keys";
+            var keysFileContent = await _httpClient.GetStringAsync(url);
+            var lines = keysFileContent.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+            var identifierLine = $"# {keyIdentifier}";
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                if (lines[i].Trim() == identifierLine)
+                {
+                    var pemBuilder = new StringBuilder();
+                    for (int j = i + 1; j < lines.Length; j++)
+                    {
+                        var currentLine = lines[j].Trim();
+                        if (currentLine.StartsWith("#")) break;
+                        
+                        pemBuilder.AppendLine(currentLine);
+                        if (currentLine == "-----END PUBLIC KEY-----")
+                        {
+                            return pemBuilder.ToString();
+                        }
+                    }
+                }
+            }
+            return string.Empty;
+        }
+        catch (HttpRequestException e)
+        {
+            Console.WriteLine($"Falha ao buscar chave para '{gitHubUser}': {e.Message}");
+            return string.Empty;
+        }
+    }
     
+    #region funcoes auxiliares
     private static async Task<byte[]> ReadBytesAsync(NetworkStream stream)
     {
         var lengthPrefix = new byte[4];
@@ -160,18 +194,15 @@ public class Server
         await stream.ReadExactlyAsync(message, 0, messageLength);
         return message;
     }
-    
     private static async Task<string> ReadStringAsync(NetworkStream stream) => Encoding.UTF8.GetString(await ReadBytesAsync(stream));
-    
     private static async Task WriteMessageAsync(NetworkStream stream, byte[] message)
     {
         await stream.WriteAsync(BitConverter.GetBytes(message.Length));
         await stream.WriteAsync(message);
     }
-    
     private static bool UnpackMessage(byte[] package, out byte[] hmacTag, out byte[] iv, out byte[] ciphertext)
     {
-        hmacTag = iv = ciphertext = [];
+        hmacTag = iv = ciphertext = Array.Empty<byte>();
         if (package.Length <= 48) return false;
         hmacTag = package[..32]; iv = package[32..48]; ciphertext = package[48..];
         return true;
@@ -195,25 +226,9 @@ public class Server
         return Encoding.UTF8.GetString(decryptor.TransformFinalBlock(cipherText, 0, cipherText.Length));
     }
     
-    private async Task<string> GetKey(string username)
-    {
-        try
-        {
-            var response = await _httpClient.GetAsync($"https://github.com/{username}.keys");
-            response.EnsureSuccessStatusCode();
-            var keysText = await response.Content.ReadAsStringAsync();
-            return keysText.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)[0];
-        }
-        catch (HttpRequestException e)
-        {
-            Console.WriteLine($"Falha ao buscar chave para '{username}': {e.Message}");
-            return string.Empty;
-        }
-    }
-    
     private static (BigInteger privateKey, BigInteger publicKey) GenerateDhKeyPair()
     {
-        var privateKey = new BigInteger(RandomNumberGenerator.GetBytes(256), true, true);
+        var privateKey = new BigInteger(RandomNumberGenerator.GetBytes(128), true, true);
         var publicKey = BigInteger.ModPow(G, privateKey, P);
         return (privateKey, publicKey);
     }
@@ -228,16 +243,17 @@ public class Server
         using var pbkdf2 = new Rfc2898DeriveBytes(sharedSecret, salt, 100_000, HashAlgorithmName.SHA256);
         return (pbkdf2.GetBytes(32), pbkdf2.GetBytes(32));
     }
+    #endregion
     
     public static async Task Main(string[] args)
     {
-        var serverUsername = "seu-usuario-github-servidor";
+        var serverIdentifier = "p1_server";
         var serverPrivateKeyPem = 
             "-----BEGIN EC PRIVATE KEY-----\n" +
-            "COLE AQUI O CONTEÚDO DA SUA CHAVE PRIVADA ECDSA EM FORMATO PEM\n" +
+            "COLE AQUI O CONTEÚDO DA SUA CHAVE PRIVADA 'server_ecdsa' GERADA LOCALMENTE\n" +
             "-----END EC PRIVATE KEY-----";
 
-        var server = new Server(serverPrivateKeyPem, serverUsername);
+        var server = new Server(serverPrivateKeyPem, serverIdentifier);
         await server.StartAsync();
     }
 }
