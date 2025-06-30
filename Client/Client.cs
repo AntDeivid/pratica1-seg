@@ -36,9 +36,9 @@ public class Client
         _username = username;
     }
 
-    public async Task RunAsync(string host, int port, string message)
+    public async Task RunAsync(string host, int port, string message, string serverIdentifier)
     {
-        Console.WriteLine($"Usuario {_username} iniciando conexão com o servidor {host}:{port}...");
+        Console.WriteLine($"Usuario '{_username}' iniciando conexão com o servidor {host}:{port}...");
 
         try
         {
@@ -47,7 +47,7 @@ public class Client
             Console.WriteLine("Conexão estabelecida");
             
             // etapa 1: enviar nome de usuario e chave publica
-            Console.WriteLine("Iniciando handshake com o servidor...");
+            Console.WriteLine("\nIniciando handshake com o servidor...");
             var (clientPrivateKey, clientPublicKey) = GenerateDhKeyPair();
             var clientPublicKeyBytes = clientPublicKey.ToByteArray(true, true);
             var dataToSign = Combine(clientPublicKeyBytes, Encoding.UTF8.GetBytes(_username));
@@ -56,7 +56,7 @@ public class Client
             await WriteMessageAsync(stream, Encoding.UTF8.GetBytes(_username));
             await WriteMessageAsync(stream, clientPublicKeyBytes);
             await WriteMessageAsync(stream, signature);
-            Console.WriteLine("Nome de usuário e chave pública enviados com sucesso");
+            Console.WriteLine("Nome de usuário e chave pública DH enviados com sucesso");
             
             // etapa 2: receber chave publica do servidor e assinatura
             var serverUsername = await ReadStringAsync(stream);
@@ -64,15 +64,15 @@ public class Client
             var serverSignature = await ReadBytesAsync(stream);
             Console.WriteLine($"Servidor respondeu com nome de usuário: {serverUsername}");
             
-            var serverPublicKeyPem = await GetKey(serverUsername);
+            var serverPublicKeyPem = await GetKey("AntDeivid", serverIdentifier);
             if (string.IsNullOrEmpty(serverPublicKeyPem))
             {
                 Console.WriteLine($"Chave pública não encontrada para '{serverUsername}'");
                 return;
             }
-            Console.WriteLine($"Chave pública de {serverUsername} recebida com sucesso");
+            Console.WriteLine($"Chave pública de '{serverUsername}' obtida com sucesso");
             
-            VerifyServerSignature(serverUsername, serverPublicKeyPem, clientPublicKeyBytes, serverSignature);
+            VerifyServerSignature(serverUsername, serverPublicKeyPem, serverPublicKeyBytes, serverSignature);
             Console.WriteLine("Assinatura do servidor verificada com sucesso");
             
             // etapa 3: derivacao de chaves
@@ -85,7 +85,7 @@ public class Client
             Console.WriteLine("Chaves AES e HMAC derivadas com sucesso");
             
             // etapa 4: enviar mensagem
-            Console.WriteLine("Enviando mensagem ao servidor...");
+            Console.WriteLine("\nEnviando mensagem ao servidor...");
             var encryptedMessage = EncryptMessage(message, aesKey, out var iv);
             var hmacTag = ComputeHmac(Combine(iv, encryptedMessage), hmacKey);
             var packedMessage = PackMessage(hmacTag, iv, encryptedMessage);
@@ -117,10 +117,43 @@ public class Client
         }
     }
     
-    /// <summary>
-    /// metodos auxiliares
-    /// </summary>
-    
+    private async Task<string> GetKey(string gitHubUser, string keyIdentifier)
+    {
+        try
+        {
+            var url = $"https://github.com/{gitHubUser}.keys";
+            var keysFileContent = await _httpClient.GetStringAsync(url);
+            var lines = keysFileContent.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+            var identifierLine = $"# {keyIdentifier}";
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                if (lines[i].Trim() == identifierLine)
+                {
+                    var pemBuilder = new StringBuilder();
+                    for (int j = i + 1; j < lines.Length; j++)
+                    {
+                        var currentLine = lines[j].Trim();
+                        if (currentLine.StartsWith("#")) break;
+                        
+                        pemBuilder.AppendLine(currentLine);
+                        if (currentLine == "-----END PUBLIC KEY-----")
+                        {
+                            return pemBuilder.ToString();
+                        }
+                    }
+                }
+            }
+            return string.Empty;
+        }
+        catch (HttpRequestException e)
+        {
+            Console.WriteLine($"Falha ao buscar chave para '{gitHubUser}': {e.Message}");
+            return string.Empty;
+        }
+    }
+
+    #region Funções Auxiliares (mantidas como no original)
     private static async Task<byte[]> ReadBytesAsync(NetworkStream stream)
     {
         var lengthPrefix = new byte[4];
@@ -168,25 +201,9 @@ public class Client
         return encryptor.TransformFinalBlock(Encoding.UTF8.GetBytes(message), 0, message.Length);
     }
     
-    private async Task<string> GetKey(string username)
-    {
-        try
-        {
-            var response = await _httpClient.GetAsync($"https://github.com/{username}.keys");
-            response.EnsureSuccessStatusCode();
-            var keysText = await response.Content.ReadAsStringAsync();
-            return keysText.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)[0];
-        }
-        catch (HttpRequestException e)
-        {
-            Console.WriteLine($"Falha ao buscar chave para '{username}': {e.Message}");
-            return string.Empty;
-        }
-    }
-    
     private static (BigInteger privateKey, BigInteger publicKey) GenerateDhKeyPair()
     {
-        var privateKey = new BigInteger(RandomNumberGenerator.GetBytes(256), true, true);
+        var privateKey = new BigInteger(RandomNumberGenerator.GetBytes(128), true, true);
         var publicKey = BigInteger.ModPow(G, privateKey, P);
         return (privateKey, publicKey);
     }
@@ -201,18 +218,20 @@ public class Client
         using var pbkdf2 = new Rfc2898DeriveBytes(sharedSecret, salt, 100_000, HashAlgorithmName.SHA256);
         return (pbkdf2.GetBytes(32), pbkdf2.GetBytes(32));
     }
-    
+    #endregion
+
     public static async Task Main(string[] args)
     {
-        var clientUsername = "seu-usuario-github-cliente";
+        var clientIdentifier = "p1_client";
+        var serverIdentifier = "p1_server";
+
         var clientPrivateKeyPem = 
             "-----BEGIN EC PRIVATE KEY-----\n" +
-            "COLE AQUI O CONTEÚDO DA SUA CHAVE PRIVADA ECDSA EM FORMATO PEM\n" +
+            "COLE AQUI O CONTEÚDO DA SUA CHAVE PRIVADA 'client_ecdsa' GERADA LOCALMENTE\n" +
             "-----END EC PRIVATE KEY-----";
-        var messageToSend = "Cliente e servidor estão com a mesma estrutura. Perfeito!";
+        var messageToSend = "Cliente e servidor com chaves múltiplas funcionando!";
 
-        var client = new Client(clientUsername, clientPrivateKeyPem);
-        await client.RunAsync("127.0.0.1", 9000, messageToSend);
+        var client = new Client(clientPrivateKeyPem, clientIdentifier);
+        await client.RunAsync("127.0.0.1", 9000, messageToSend, serverIdentifier);
     }
-    
 }
