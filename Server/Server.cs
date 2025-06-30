@@ -1,4 +1,6 @@
-﻿using System.Net.Sockets;
+﻿using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,10 +9,6 @@ namespace pratica1_seg;
 
 public class Server
 {
-    private readonly ECDsa _serverEcdsa;
-    private readonly string _username;
-    private readonly HttpClient _httpClient = new();
-
     private static readonly BigInteger P = BigInteger.Parse(
         "00FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1C" +
         "D129024E088A67CC74020BBEA63B139B22514A08798E3404" +
@@ -25,9 +23,12 @@ public class Server
         "1015728E5A8AAAC42DAD33170D04507A33A85521ABDF1CBA" +
         "64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4" +
         "C7ABF5AE8CDB0933D71E8C94E04A25619DCE3352E0C30572" +
-        "967B3767F8959DB70C582B49141BF51011910B1D428989", System.Globalization.NumberStyles.HexNumber);
+        "967B3767F8959DB70C582B49141BF51011910B1D428989", NumberStyles.HexNumber);
 
     private static readonly BigInteger G = new(2);
+    private readonly HttpClient _httpClient = new();
+    private readonly ECDsa _serverEcdsa;
+    private readonly string _username;
 
     public Server(string privateKey, string username)
     {
@@ -38,7 +39,7 @@ public class Server
 
     public async Task StartAsync(int port = 9000)
     {
-        var listener = new TcpListener(System.Net.IPAddress.Any, port);
+        var listener = new TcpListener(IPAddress.Any, port);
         listener.Start();
         Console.WriteLine($"Servidor '{_username}' iniciado na porta {port}. Aguardando conexões...");
 
@@ -73,7 +74,7 @@ public class Server
 
             VerifyClientSignature(clientEcdsa, clientDhKey, clientSignature, clientUsername);
             Console.WriteLine("Assinatura do cliente verificada com sucesso");
-            
+
             var (serverPrivateKey, serverPublicKey) = GenerateDhKeyPair();
             var publicKeyBytes = serverPublicKey.ToByteArray(true, true);
             var dataToSign = Combine(publicKeyBytes, Encoding.UTF8.GetBytes(_username));
@@ -105,12 +106,9 @@ public class Server
 
     private void VerifyClientSignature(ECDsa clientEcdsa, byte[] dhKey, byte[] signature, string clientUsername)
     {
-        // BUG FIX: Usar o username recebido em vez de um valor fixo
         var dataToVerify = Combine(dhKey, Encoding.UTF8.GetBytes(clientUsername));
         if (!clientEcdsa.VerifyData(dataToVerify, signature, HashAlgorithmName.SHA256))
-        {
             throw new CryptographicException("Assinatura inválida do cliente");
-        }
     }
 
     private async Task ProcessMessage(NetworkStream stream, byte[] aesKey, byte[] hmacKey)
@@ -118,11 +116,11 @@ public class Server
         var encryptedPackage = await ReadBytesAsync(stream);
         if (!UnpackMessage(encryptedPackage, out var hmacTag, out var iv, out var ciphertext))
             throw new FormatException("Pacote malformado");
-        
+
         var expectedHmac = ComputeHmac(Combine(iv, ciphertext), hmacKey);
         if (!CryptographicOperations.FixedTimeEquals(hmacTag, expectedHmac))
             throw new CryptographicException("HMAC inválido");
-        
+
         Console.WriteLine("HMAC verificado com sucesso");
         var decryptedMessage = DecryptMessage(ciphertext, aesKey, iv);
         Console.WriteLine($"Mensagem recebida: {decryptedMessage}");
@@ -143,70 +141,146 @@ public class Server
             return string.Empty;
         }
     }
-    
+
     public static ECDsa ParseSshKey(string sshKey)
     {
         var parts = sshKey.Split(' ');
         if (parts.Length < 2) throw new ArgumentException("Formato de chave SSH inválido.");
-    
+
         var keyData = Convert.FromBase64String(parts[1]);
         using var ms = new MemoryStream(keyData);
         using var reader = new BinaryReader(ms);
-    
-        byte[] ReadNextField()
-        {
-            var length = (int)System.Net.IPAddress.NetworkToHostOrder(reader.ReadInt32());
-            return reader.ReadBytes(length);
-        }
-    
-        ReadNextField(); // keyType, e.g., "ecdsa-sha2-nistp256", não precisamos dele
+
+        ReadNextField();
         var curveName = Encoding.ASCII.GetString(ReadNextField());
         var publicPointBytes = ReadNextField();
-    
+
         ECCurve curve;
         int keySize;
         switch (curveName)
         {
-            case "nistp256": curve = ECCurve.NamedCurves.nistP256; keySize = 32; break;
-            case "nistp384": curve = ECCurve.NamedCurves.nistP384; keySize = 48; break;
-            case "nistp521": curve = ECCurve.NamedCurves.nistP521; keySize = 66; break;
+            case "nistp256":
+                curve = ECCurve.NamedCurves.nistP256;
+                keySize = 32;
+                break;
+            case "nistp384":
+                curve = ECCurve.NamedCurves.nistP384;
+                keySize = 48;
+                break;
+            case "nistp521":
+                curve = ECCurve.NamedCurves.nistP521;
+                keySize = 66;
+                break;
             default: throw new NotSupportedException($"Curva ECDSA não suportada: {curveName}");
         }
-    
+
         if (publicPointBytes[0] != 0x04)
-        {
-            throw new NotSupportedException("Formato do ponto da chave pública não suportado. Apenas chaves não comprimidas são aceites.");
-        }
-        
+            throw new NotSupportedException(
+                "Formato do ponto da chave pública não suportado. Apenas chaves não comprimidas são aceites.");
+
         var x = new byte[keySize];
         var y = new byte[keySize];
         Buffer.BlockCopy(publicPointBytes, 1, x, 0, keySize);
         Buffer.BlockCopy(publicPointBytes, 1 + keySize, y, 0, keySize);
-    
+
         var ecParams = new ECParameters { Curve = curve, Q = { X = x, Y = y } };
-    
+
         var ecdsa = ECDsa.Create();
         ecdsa.ImportParameters(ecParams);
         return ecdsa;
+
+        byte[] ReadNextField()
+        {
+            var length = IPAddress.NetworkToHostOrder(reader.ReadInt32());
+            return reader.ReadBytes(length);
+        }
     }
 
-    #region funcoes auxiliares
-    private static async Task<byte[]> ReadBytesAsync(NetworkStream stream) { var lengthPrefix = new byte[4]; await stream.ReadExactlyAsync(lengthPrefix, 0, 4); var messageLength = BitConverter.ToInt32(lengthPrefix, 0); var message = new byte[messageLength]; await stream.ReadExactlyAsync(message, 0, messageLength); return message; }
-    private static async Task<string> ReadStringAsync(NetworkStream stream) => Encoding.UTF8.GetString(await ReadBytesAsync(stream));
-    private static async Task WriteMessageAsync(NetworkStream stream, byte[] message) { await stream.WriteAsync(BitConverter.GetBytes(message.Length)); await stream.WriteAsync(message); }
-    private static bool UnpackMessage(byte[] package, out byte[] hmacTag, out byte[] iv, out byte[] ciphertext) { hmacTag = iv = ciphertext = Array.Empty<byte>(); if (package.Length <= 48) return false; hmacTag = package[..32]; iv = package[32..48]; ciphertext = package[48..]; return true; }
-    private static byte[] ComputeHmac(byte[] data, byte[] key) => HMACSHA256.HashData(key, data);
-    private static byte[] Combine(byte[] first, byte[] second) { var ret = new byte[first.Length + second.Length]; Buffer.BlockCopy(first, 0, ret, 0, first.Length); Buffer.BlockCopy(second, 0, ret, first.Length, second.Length); return ret; }
-    private static string DecryptMessage(byte[] cipherText, byte[] key, byte[] iv) { using var aes = Aes.Create(); aes.Key = key; aes.IV = iv; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7; using var decryptor = aes.CreateDecryptor(); return Encoding.UTF8.GetString(decryptor.TransformFinalBlock(cipherText, 0, cipherText.Length)); }
-    private static (BigInteger privateKey, BigInteger publicKey) GenerateDhKeyPair() { var privateKey = new BigInteger(RandomNumberGenerator.GetBytes(128), true, true); var publicKey = BigInteger.ModPow(G, privateKey, P); return (privateKey, publicKey); }
-    private static byte[] ComputeSharedSecret(BigInteger otherPublicKey, BigInteger ourPrivateKey) => BigInteger.ModPow(otherPublicKey, ourPrivateKey, P).ToByteArray(true, true);
-    private static (byte[] aesKey, byte[] hmacKey) DeriveKeys(byte[] sharedSecret, byte[] salt) { using var pbkdf2 = new Rfc2898DeriveBytes(sharedSecret, salt, 100_000, HashAlgorithmName.SHA256); return (pbkdf2.GetBytes(32), pbkdf2.GetBytes(32)); }
-    #endregion
-    
     public static async Task Main(string[] args)
     {
-        var pem = "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIJ+i0IJTGfhVLOJzciHungG1EuKf8r7Gz0Uko+5lTva1oAoGCCqGSM49\nAwEHoUQDQgAEE41TSs1GaWUqLPbEaJGZia8EpXJT4TGF507EInItLJALFg/ih3iv\n3bGQ9okPihAale7NXVgqYpboRlTry3STcw==\n-----END EC PRIVATE KEY-----\n";
+        const string pem = "-----BEGIN EC PRIVATE KEY-----\n" +
+                           "MHcCAQEEIJ+i0IJTGfhVLOJzciHungG1EuKf8r7Gz0Uko+5lTva1oAoGCCqGSM49\n" +
+                           "AwEHoUQDQgAEE41TSs1GaWUqLPbEaJGZia8EpXJT4TGF507EInItLJALFg/ih3iv\n" +
+                           "3bGQ9okPihAale7NXVgqYpboRlTry3STcw==\n" +
+                           "-----END EC PRIVATE KEY-----\n";
         var server = new Server(pem, "p1_server");
         await server.StartAsync();
     }
+
+    #region funcoes auxiliares
+
+    private static async Task<byte[]> ReadBytesAsync(NetworkStream stream)
+    {
+        var lengthPrefix = new byte[4];
+        await stream.ReadExactlyAsync(lengthPrefix, 0, 4);
+        var messageLength = BitConverter.ToInt32(lengthPrefix, 0);
+        var message = new byte[messageLength];
+        await stream.ReadExactlyAsync(message, 0, messageLength);
+        return message;
+    }
+
+    private static async Task<string> ReadStringAsync(NetworkStream stream)
+    {
+        return Encoding.UTF8.GetString(await ReadBytesAsync(stream));
+    }
+
+    private static async Task WriteMessageAsync(NetworkStream stream, byte[] message)
+    {
+        await stream.WriteAsync(BitConverter.GetBytes(message.Length));
+        await stream.WriteAsync(message);
+    }
+
+    private static bool UnpackMessage(byte[] package, out byte[] hmacTag, out byte[] iv, out byte[] ciphertext)
+    {
+        hmacTag = iv = ciphertext = Array.Empty<byte>();
+        if (package.Length <= 48) return false;
+        hmacTag = package[..32];
+        iv = package[32..48];
+        ciphertext = package[48..];
+        return true;
+    }
+
+    private static byte[] ComputeHmac(byte[] data, byte[] key)
+    {
+        return HMACSHA256.HashData(key, data);
+    }
+
+    private static byte[] Combine(byte[] first, byte[] second)
+    {
+        var ret = new byte[first.Length + second.Length];
+        Buffer.BlockCopy(first, 0, ret, 0, first.Length);
+        Buffer.BlockCopy(second, 0, ret, first.Length, second.Length);
+        return ret;
+    }
+
+    private static string DecryptMessage(byte[] cipherText, byte[] key, byte[] iv)
+    {
+        using var aes = Aes.Create();
+        aes.Key = key;
+        aes.IV = iv;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.PKCS7;
+        using var decryptor = aes.CreateDecryptor();
+        return Encoding.UTF8.GetString(decryptor.TransformFinalBlock(cipherText, 0, cipherText.Length));
+    }
+
+    private static (BigInteger privateKey, BigInteger publicKey) GenerateDhKeyPair()
+    {
+        var privateKey = new BigInteger(RandomNumberGenerator.GetBytes(128), true, true);
+        var publicKey = BigInteger.ModPow(G, privateKey, P);
+        return (privateKey, publicKey);
+    }
+
+    private static byte[] ComputeSharedSecret(BigInteger otherPublicKey, BigInteger ourPrivateKey)
+    {
+        return BigInteger.ModPow(otherPublicKey, ourPrivateKey, P).ToByteArray(true, true);
+    }
+
+    private static (byte[] aesKey, byte[] hmacKey) DeriveKeys(byte[] sharedSecret, byte[] salt)
+    {
+        using var pbkdf2 = new Rfc2898DeriveBytes(sharedSecret, salt, 100_000, HashAlgorithmName.SHA256);
+        return (pbkdf2.GetBytes(32), pbkdf2.GetBytes(32));
+    }
+
+    #endregion
 }
