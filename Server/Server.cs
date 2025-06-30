@@ -12,12 +12,21 @@ public class Server
     private readonly HttpClient _httpClient = new();
     
     private static readonly BigInteger P = BigInteger.Parse(
-        "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1" +
-        "29024E088A67CC74020BBEA63B139B22514A08798E3404DD" +
-        "EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245" +
-        "E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED" +
-        "EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381" +
-        "FFFFFFFFFFFFFFFF", System.Globalization.NumberStyles.HexNumber);
+        "00FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1C" +
+        "D129024E088A67CC74020BBEA63B139B22514A08798E3404" +
+        "DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C2" +
+        "45E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7" +
+        "EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B" +
+        "3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF" +
+        "5F83655D23DCA3AD961C62F356208552BB9ED52907709696" +
+        "6D670C354E4ABC9804F1746C08CA18217C32905E462E36CE" +
+        "3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52" +
+        "C9DE2BCBF6955817183995497CEA956AE515D2261898FA05" +
+        "1015728E5A8AAAC42DAD33170D04507A33A85521ABDF1CBA" +
+        "64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4" +
+        "C7ABF5AE8CDB0933D71E8C94E04A25619DCE3352E0C30572" +
+        "967B3767F8959DB70C582B49141BF51011910B1D428989", System.Globalization.NumberStyles.HexNumber);
+    
     private static readonly BigInteger G = new(2);
 
     public Server(string privateKey, string username)
@@ -70,7 +79,7 @@ public class Server
             // etapa 2: gerar chave DH e enviar chave publica e assinatura
             var (serverPrivateKey, serverPublicKey) = GenerateDhKeyPair();
             var publicKeyBytes = serverPublicKey.ToByteArray(true, true);
-            var dataToSign = Combine(Encoding.UTF8.GetBytes(_username), publicKeyBytes);
+            var dataToSign = Combine(publicKeyBytes, Encoding.UTF8.GetBytes(_username));
             var serverSignature = _serverEcdsa.SignData(dataToSign, HashAlgorithmName.SHA256);
 
             await WriteMessageAsync(stream, Encoding.UTF8.GetBytes(_username));
@@ -131,7 +140,7 @@ public class Server
     {
         using var clientEcdsa = ECDsa.Create();
         clientEcdsa.ImportFromPem(pemKey);
-        var dataToVerify = Combine(Encoding.UTF8.GetBytes(username), dhKey);
+        var dataToVerify = Combine(dhKey, Encoding.UTF8.GetBytes(username));
         if (!clientEcdsa.VerifyData(dataToVerify, signature, HashAlgorithmName.SHA256))
         {
             throw new CryptographicException("Assinatura inválida do cliente");
@@ -197,7 +206,7 @@ public class Server
         }
         catch (HttpRequestException e)
         {
-            Console.WriteLine($"[ERRO] Falha ao buscar chave para '{username}': {e.Message}");
+            Console.WriteLine($"Falha ao buscar chave para '{username}': {e.Message}");
             return string.Empty;
         }
     }
